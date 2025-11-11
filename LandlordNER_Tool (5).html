@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Landlord Net Effective Rent Analysis</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        
+        // Icon components
+        const Download = ({ size = 24, className = "" }) => (
+            <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+        );
+
+        const Plus = ({ size = 24, className = "" }) => (
+            <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+        );
+
+        const Copy = ({ size = 24, className = "" }) => (
+            <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+        );
+
+        const Trash2 = ({ size = 24, className = "" }) => (
+            <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+        );
+
+        const Calculator = ({ size = 24, className = "" }) => (
+            <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="4" y="2" width="16" height="20" rx="2"/>
+                <line x1="8" y1="6" x2="16" y2="6"/>
+            </svg>
+        );
+
+        const LandlordNERTool = () => {
+            // Helper to get next deal letter
+            const getNextDealLetter = (existingDeals) => {
+                const letters = ['A', 'B', 'C', 'D'];
+                const usedLetters = existingDeals.map(d => d.name.replace('Deal ', ''));
+                return letters.find(letter => !usedLetters.includes(letter)) || 'E';
+            };
+
+            // Default deal template
+            const getDefaultDeal = (name) => ({
+                id: Date.now() + Math.random(),
+                name: name || "Deal A",
+                commencementDate: "2026-06-01",
+                suiteSize: 6062,
+                term: 38,
+                rateType: "FS",
+                baseRate: 31.50,
+                annualEscalation: 3,
+                opex: 8.25, // Actual landlord operating expenses
+                opexEscalation: 2.5,
+                baseYear: 2026,
+                baseYearOpex: 8.25,
+                freeRentMonths: 2,
+                abatementPercent: 100,
+                tiAllowance: 10,
+                procurementMultiplier: 1.5,
+                procurementBasis: "Gross",
+                includeOpexInNNNGross: false,
+                commissionRate: 6,
+                commissionBasis: "Gross",
+                additionalCosts: 0
+            });
+
+            // Initial deals
+            const [deals, setDeals] = useState([
+                { ...getDefaultDeal("Deal A"), id: 1 },
+                { 
+                    ...getDefaultDeal("Deal B"), 
+                    id: 2,
+                    term: 64,
+                    baseRate: 31.00,
+                    tiAllowance: 25,
+                    freeRentMonths: 4
+                }
+            ]);
+
+            const [results, setResults] = useState({});
+            const [showAddModal, setShowAddModal] = useState(false);
+            const [copyFromDealId, setCopyFromDealId] = useState(null);
+            const [discountRate, setDiscountRate] = useState(8); // Annual discount rate in percentage
+            
+            const chartInstances = useRef({});
+
+            // Render charts when results change
+            useEffect(() => {
+                const calculatedDeals = deals.filter(d => results[d.id]);
+                if (calculatedDeals.length === 0) return;
+
+                const colors = [
+                    { bg: 'rgba(59, 130, 246, 0.2)', border: 'rgb(59, 130, 246)' },
+                    { bg: 'rgba(34, 197, 94, 0.2)', border: 'rgb(34, 197, 94)' },
+                    { bg: 'rgba(168, 85, 247, 0.2)', border: 'rgb(168, 85, 247)' },
+                    { bg: 'rgba(249, 115, 22, 0.2)', border: 'rgb(249, 115, 22)' }
+                ];
+
+                // Chart 1: Cumulative Net Cash Flow
+                const ctx1 = document.getElementById('cumulativeCashFlowChart');
+                if (ctx1) {
+                    if (chartInstances.current.cumulativeCashFlow) {
+                        chartInstances.current.cumulativeCashFlow.destroy();
+                    }
+
+                    const datasets = calculatedDeals.map((deal, idx) => {
+                        const result = results[deal.id];
+                        return {
+                            label: deal.name,
+                            data: result.cumulativeCashFlow.map(cf => ({ x: cf.month, y: cf.cumulative })),
+                            borderColor: colors[idx].border,
+                            backgroundColor: colors[idx].bg,
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.1
+                        };
+                    });
+
+                    // Build annotations for breakeven points
+                    const annotations = {};
+                    calculatedDeals.forEach((deal, idx) => {
+                        const result = results[deal.id];
+                        if (result.breakevenMonth) {
+                            annotations[`breakeven${idx}`] = {
+                                type: 'point',
+                                xValue: result.breakevenMonth,
+                                yValue: 0,
+                                backgroundColor: colors[idx].border,
+                                borderColor: colors[idx].border,
+                                borderWidth: 2,
+                                radius: 6,
+                                label: {
+                                    display: true,
+                                    content: `${deal.name}: Month ${result.breakevenMonth}`,
+                                    position: 'top',
+                                    backgroundColor: colors[idx].border,
+                                    color: 'white',
+                                    font: {
+                                        size: 10,
+                                        weight: 'bold'
+                                    },
+                                    padding: 4,
+                                    borderRadius: 4
+                                }
+                            };
+                        }
+                    });
+
+                    chartInstances.current.cumulativeCashFlow = new Chart(ctx1, {
+                        type: 'line',
+                        data: { datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            plugins: {
+                                legend: { display: true, position: 'top' },
+                                title: { display: false },
+                                annotation: {
+                                    annotations
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    type: 'linear',
+                                    title: { display: true, text: 'Month' },
+                                    ticks: { stepSize: 6 }
+                                },
+                                y: {
+                                    title: { display: true, text: 'Cumulative Cash Flow ($)' },
+                                    ticks: {
+                                        callback: function(value) {
+                                            return '$' + value.toLocaleString();
+                                        }
+                                    },
+                                    grid: {
+                                        color: function(context) {
+                                            if (context.tick.value === 0) {
+                                                return 'rgba(0, 0, 0, 0.5)';
+                                            }
+                                            return 'rgba(0, 0, 0, 0.1)';
+                                        },
+                                        lineWidth: function(context) {
+                                            if (context.tick.value === 0) {
+                                                return 2;
+                                            }
+                                            return 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                // Chart 2: NPV-Based NER Comparison
+                const ctx2 = document.getElementById('npvComparisonChart');
+                if (ctx2) {
+                    if (chartInstances.current.npvComparison) {
+                        chartInstances.current.npvComparison.destroy();
+                    }
+
+                    chartInstances.current.npvComparison = new Chart(ctx2, {
+                        type: 'bar',
+                        data: {
+                            labels: calculatedDeals.map(d => d.name),
+                            datasets: [{
+                                label: 'NPV-Based NER ($/SF/yr)',
+                                data: calculatedDeals.map(d => results[d.id].npvNER),
+                                backgroundColor: calculatedDeals.map((d, idx) => colors[idx].bg),
+                                borderColor: calculatedDeals.map((d, idx) => colors[idx].border),
+                                borderWidth: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            plugins: {
+                                legend: { display: false },
+                                title: { display: false }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: { display: true, text: 'NPV-Based NER ($/SF/yr)' },
+                                    ticks: {
+                                        callback: function(value) {
+                                            return '$' + value.toFixed(2);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+
+                // Cleanup function
+                return () => {
+                    Object.values(chartInstances.current).forEach(chart => {
+                        if (chart) chart.destroy();
+                    });
+                };
+            }, [results, deals]);
+
+            // Helper functions
+            const roundToCent = (value) => Math.round(value * 100) / 100;
+
+            const formatCurrency = (value) => {
+                return new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                }).format(value);
+            };
+
+            const sanitizeSheetName = (name) => {
+                return name.replace(/[\\\/\?\*\[\]:]/g, '-').substring(0, 31);
+            };
+
+            // Export chart as PNG
+            const exportChart = (canvasId, filename) => {
+                const canvas = document.getElementById(canvasId);
+                if (canvas) {
+                    const url = canvas.toDataURL('image/png');
+                    const link = document.createElement('a');
+                    link.download = `${filename}_${new Date().toISOString().slice(0, 10)}.png`;
+                    link.href = url;
+                    link.click();
+                }
+            };
+
+            // Main calculation function
+            const calculateDeal = (deal) => {
+                const [commYear, commMonth, commDay] = deal.commencementDate.split('-').map(Number);
+                const commencementMonth = commMonth - 1; // 0-indexed
+                const commencementYear = commYear;
+                
+                // Generate monthly schedule
+                const months = [];
+                let currentBaseRate = deal.baseRate;
+                let currentOpexRate = deal.rateType === "NNN" ? deal.opex : deal.baseYearOpex;
+                
+                for (let month = 1; month <= deal.term; month++) {
+                    // Calculate the date for this month
+                    const monthDate = new Date(commencementYear, commencementMonth + (month - 1), commDay);
+                    const calendarYear = monthDate.getFullYear();
+                    const calendarMonth = monthDate.getMonth(); // 0-indexed
+                    
+                    // Handle base rent escalations (lease year based)
+                    const hasBaseEscalation = month > 1 && (month - 1) % 12 === 0;
+                    if (hasBaseEscalation) {
+                        currentBaseRate = roundToCent(currentBaseRate * (1 + deal.annualEscalation / 100));
+                    }
+                    
+                    // Handle OPEX escalations (calendar year based - every January 1st)
+                    // Check if this is January AND not the first month of lease (unless lease starts in January)
+                    const hasOpexEscalation = month > 1 && calendarMonth === 0 && !(month === 2 && commencementMonth === 0);
+                    if (hasOpexEscalation) {
+                        currentOpexRate = roundToCent(currentOpexRate * (1 + deal.opexEscalation / 100));
+                    }
+                    
+                    const monthlyBaseRent = roundToCent((currentBaseRate * deal.suiteSize) / 12);
+                    const monthlyOpex = roundToCent((currentOpexRate * deal.suiteSize) / 12);
+                    
+                    // Calculate gross revenue and OPEX based on rate type
+                    let grossRevenue;
+                    let opexRecovery;
+                    
+                    if (deal.rateType === "NNN") {
+                        // NNN: Tenant pays base + OPEX separately, landlord recovers OPEX
+                        opexRecovery = monthlyOpex;
+                        grossRevenue = monthlyBaseRent + opexRecovery;
+                    } else {
+                        // FS: Tenant pays base rent only (OPEX included), no recovery
+                        opexRecovery = 0;
+                        grossRevenue = monthlyBaseRent;
+                    }
+                    
+                    // Apply free rent abatement
+                    const isFreeRentMonth = month <= deal.freeRentMonths;
+                    const abatement = isFreeRentMonth ? roundToCent(monthlyBaseRent * (deal.abatementPercent / 100)) : 0;
+                    
+                    // Net revenue after abatement (before OPEX expense)
+                    const netRevenue = roundToCent(grossRevenue - abatement);
+                    
+                    // Landlord's net rent = Net Revenue - OPEX expenses
+                    const landlordNetRent = roundToCent(netRevenue - monthlyOpex);
+                    
+                    // Calculate start date
+                    const startDate = monthDate.toISOString().slice(0, 10);
+                    
+                    months.push({
+                        month,
+                        startDate,
+                        baseRate: currentBaseRate,
+                        opexRate: currentOpexRate,
+                        baseRent: monthlyBaseRent,
+                        opexRecovery,
+                        opexExpense: monthlyOpex,
+                        grossRevenue,
+                        abatement,
+                        netRevenue,
+                        landlordNetRent,
+                        hasBaseEscalation,
+                        hasOpexEscalation
+                    });
+                }
+                
+                // Calculate upfront costs - TI
+                const tiCost = roundToCent(deal.tiAllowance * deal.suiteSize);
+                
+                // Calculate commissions with procurement fee
+                const fullTermMonths = months;
+                
+                // Step 1: Calculate procurement fee
+                let procurementFee = 0;
+                if (deal.procurementMultiplier > 0) {
+                    const month1 = fullTermMonths[0];
+                    let month1Rent = month1.baseRent;
+                    
+                    // If NNN and Gross basis with OPEX included
+                    if (deal.rateType === "NNN" && deal.procurementBasis === "Gross" && deal.includeOpexInNNNGross) {
+                        month1Rent += month1.opexRecovery;
+                    }
+                    
+                    procurementFee = roundToCent(month1Rent * deal.procurementMultiplier);
+                }
+                
+                // Step 2: Calculate sum of (Base Rent - Abatement) for all months
+                const sumBaseRentMinusAbatement = roundToCent(
+                    fullTermMonths.reduce((sum, m) => sum + (m.baseRent - m.abatement), 0)
+                );
+                
+                // Step 3: Calculate Total Consideration based on commission basis
+                let totalConsideration = 0;
+                
+                if (deal.rateType === "FS") {
+                    // FS: Always just Base - Abatement
+                    totalConsideration = sumBaseRentMinusAbatement;
+                } else if (deal.rateType === "NNN") {
+                    if (deal.commissionBasis === "Gross") {
+                        // NNN Gross: (Base - Abatement) + (BASE YEAR OPEX × Term) - NO ESCALATIONS
+                        // Commission only on mathematically determinable amounts at signing
+                        const baseYearMonthlyOpex = roundToCent((deal.opex * deal.suiteSize) / 12);
+                        const opexComponent = roundToCent(baseYearMonthlyOpex * deal.term);
+                        totalConsideration = roundToCent(sumBaseRentMinusAbatement + opexComponent);
+                    } else {
+                        // NNN Net: Only Base - Abatement
+                        totalConsideration = sumBaseRentMinusAbatement;
+                    }
+                }
+                
+                // Step 4: Calculate percentage commission
+                const commissionableAmount = roundToCent(totalConsideration - procurementFee);
+                const percentageCommission = roundToCent(commissionableAmount * (deal.commissionRate / 100));
+                
+                const totalCommissions = roundToCent(procurementFee + percentageCommission);
+                
+                // Calculate NPV-based NER
+                const annualDiscountRate = discountRate / 100;
+                const monthlyDiscountRate = Math.pow(1 + annualDiscountRate, 1/12) - 1;
+                
+                // Calculate present value of each month's net rent
+                let pvOfNetRents = 0;
+                months.forEach((m, index) => {
+                    const monthNum = index + 1; // Month 1, 2, 3...
+                    const discountFactor = Math.pow(1 + monthlyDiscountRate, monthNum);
+                    const pvOfMonth = m.landlordNetRent / discountFactor;
+                    pvOfNetRents += pvOfMonth;
+                });
+                
+                pvOfNetRents = roundToCent(pvOfNetRents);
+                
+                // Subtract upfront costs (not discounted as they occur at month 0)
+                const upfrontCosts = roundToCent(tiCost + totalCommissions + deal.additionalCosts);
+                const npv = roundToCent(pvOfNetRents - upfrontCosts);
+                
+                // Calculate present value factor for term conversion
+                let pvFactor = 0;
+                for (let month = 1; month <= deal.term; month++) {
+                    pvFactor += 1 / Math.pow(1 + monthlyDiscountRate, month);
+                }
+                const pvYears = pvFactor / 12;
+                
+                // NPV-based NER = NPV / (RSF × PV-adjusted years)
+                const npvNER = roundToCent(npv / (deal.suiteSize * pvYears));
+                
+                // Calculate simple averages for comparison
+                const totalNetRent = roundToCent(months.reduce((sum, m) => sum + m.landlordNetRent, 0));
+                const totalAfterCosts = roundToCent(totalNetRent - upfrontCosts);
+                const simpleNER = roundToCent(totalAfterCosts / deal.suiteSize / (deal.term / 12));
+                const avgMonthlyNet = roundToCent(totalNetRent / deal.term);
+                
+                // Calculate cumulative cash flow for breakeven analysis
+                const cumulativeCashFlow = [];
+                let cumulative = -upfrontCosts;
+                cumulativeCashFlow.push({ month: 0, cumulative });
+                
+                months.forEach(m => {
+                    cumulative += m.landlordNetRent;
+                    cumulativeCashFlow.push({ month: m.month, cumulative: roundToCent(cumulative) });
+                });
+                
+                // Find breakeven month
+                let breakevenMonth = null;
+                for (let i = 1; i < cumulativeCashFlow.length; i++) {
+                    if (cumulativeCashFlow[i].cumulative >= 0 && cumulativeCashFlow[i - 1].cumulative < 0) {
+                        breakevenMonth = cumulativeCashFlow[i].month;
+                        break;
+                    }
+                }
+                
+                return {
+                    months,
+                    tiCost,
+                    procurementFee,
+                    percentageCommission,
+                    totalCommissions,
+                    upfrontCosts,
+                    totalNetRent,
+                    avgMonthlyNet,
+                    simpleNER,
+                    pvOfNetRents,
+                    npv,
+                    npvNER,
+                    cumulativeCashFlow,
+                    breakevenMonth,
+                    monthlyDiscountRate: monthlyDiscountRate * 100,
+                    pvYears: roundToCent(pvYears)
+                };
+            };
+
+            const handleCalculate = (dealId) => {
+                const deal = deals.find(d => d.id === dealId);
+                if (deal) {
+                    const result = calculateDeal(deal);
+                    setResults(prev => ({ ...prev, [dealId]: result }));
+                }
+            };
+
+            const updateDeal = (dealId, field, value) => {
+                setDeals(deals.map(d => 
+                    d.id === dealId ? { ...d, [field]: value } : d
+                ));
+            };
+
+            const addNewDeal = () => {
+                if (deals.length >= 4) {
+                    alert('Maximum 4 deals allowed');
+                    return;
+                }
+                
+                const nextLetter = getNextDealLetter(deals);
+                let newDeal;
+                
+                if (copyFromDealId) {
+                    const dealToCopy = deals.find(d => d.id === copyFromDealId);
+                    newDeal = {
+                        ...dealToCopy,
+                        id: Date.now() + Math.random(),
+                        name: `Deal ${nextLetter}`
+                    };
+                } else {
+                    newDeal = {
+                        ...getDefaultDeal(`Deal ${nextLetter}`),
+                        id: Date.now() + Math.random()
+                    };
+                }
+                
+                setDeals([...deals, newDeal]);
+                setShowAddModal(false);
+                setCopyFromDealId(null);
+            };
+
+            const duplicateDeal = (dealId) => {
+                if (deals.length >= 4) {
+                    alert('Maximum 4 deals allowed');
+                    return;
+                }
+                
+                const dealToCopy = deals.find(d => d.id === dealId);
+                const nextLetter = getNextDealLetter(deals);
+                const newDeal = {
+                    ...dealToCopy,
+                    id: Date.now() + Math.random(),
+                    name: `Deal ${nextLetter}`
+                };
+                
+                setDeals([...deals, newDeal]);
+            };
+
+            const removeDeal = (dealId) => {
+                if (deals.length <= 1) {
+                    alert('Must have at least one deal');
+                    return;
+                }
+                
+                setDeals(deals.filter(d => d.id !== dealId));
+                const newResults = { ...results };
+                delete newResults[dealId];
+                setResults(newResults);
+            };
+
+            // Render input field helper
+            const renderInput = (dealId, label, value, field, type = "text", className = "", step = null, placeholder = "") => (
+                <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                        {label}
+                    </label>
+                    <input
+                        type={type}
+                        value={value}
+                        onChange={(e) => updateDeal(dealId, field, type === "number" ? parseFloat(e.target.value) || 0 : e.target.value)}
+                        className={`w-full border rounded px-3 py-2 ${className}`}
+                        step={step}
+                        placeholder={placeholder}
+                    />
+                </div>
+            );
+
+            const renderSelect = (dealId, label, value, field, options) => (
+                <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                        {label}
+                    </label>
+                    <select
+                        value={value}
+                        onChange={(e) => updateDeal(dealId, field, e.target.value)}
+                        className="w-full border rounded px-3 py-2"
+                    >
+                        {options.map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                    </select>
+                </div>
+            );
+
+            const renderCheckbox = (dealId, label, value, field) => (
+                <div className="mb-3 flex items-center">
+                    <input
+                        type="checkbox"
+                        checked={value}
+                        onChange={(e) => updateDeal(dealId, field, e.target.checked)}
+                        className="mr-2"
+                    />
+                    <label className="text-sm font-medium text-gray-700">
+                        {label}
+                    </label>
+                </div>
+            );
+
+            // Export functions
+            const exportCommissionCalc = () => {
+                try {
+                    if (typeof XLSX === 'undefined') {
+                        alert('Excel library not loaded. Please refresh the page.');
+                        return;
+                    }
+                    
+                    const workbook = XLSX.utils.book_new();
+                    const calculatedDeals = deals.filter(d => results[d.id]);
+                    
+                    if (calculatedDeals.length === 0) {
+                        alert('Please calculate at least one deal before exporting.');
+                        return;
+                    }
+                    
+                    calculatedDeals.forEach(deal => {
+                        const result = results[deal.id];
+                        const data = [];
+                        
+                        data.push([`${deal.name} - Commission Calculation`]);
+                        data.push([]);
+                        
+                        // Deal Parameters
+                        data.push(['DEAL PARAMETERS']);
+                        data.push(['Suite Size (RSF):', deal.suiteSize]);
+                        data.push(['Term (months):', deal.term]);
+                        data.push(['Base Rate ($/SF/yr):', deal.baseRate]);
+                        data.push(['Rate Type:', deal.rateType]);
+                        data.push(['OPEX ($/SF/yr):', deal.rateType === "NNN" ? deal.opex : deal.baseYearOpex]);
+                        data.push(['Free Rent Months:', deal.freeRentMonths]);
+                        data.push(['Abatement %:', deal.abatementPercent]);
+                        data.push([]);
+                        
+                        // Commission Structure
+                        data.push(['COMMISSION STRUCTURE']);
+                        data.push(['Procurement Multiplier:', deal.procurementMultiplier]);
+                        data.push(['Procurement Basis:', deal.procurementBasis]);
+                        if (deal.rateType === "NNN") {
+                            data.push(['Include OPEX in NNN Gross:', deal.includeOpexInNNNGross ? 'Yes' : 'No']);
+                        }
+                        data.push(['Commission Rate (%):', deal.commissionRate]);
+                        data.push(['Commission Basis:', deal.commissionBasis]);
+                        data.push([]);
+                        
+                        // Detailed Calculation
+                        data.push(['COMMISSION CALCULATION BREAKDOWN']);
+                        data.push([]);
+                        
+                        // Month 1 rent for procurement
+                        const month1 = result.months[0];
+                        data.push(['PROCUREMENT FEE CALCULATION']);
+                        data.push(['Month 1 Base Rent:', month1.baseRent]);
+                        if (deal.rateType === "NNN" && deal.procurementBasis === "Gross" && deal.includeOpexInNNNGross) {
+                            data.push(['Month 1 OPEX Recovery:', month1.opexRecovery]);
+                            data.push(['Month 1 Total (Gross):', month1.baseRent + month1.opexRecovery]);
+                        }
+                        const procBase = (deal.rateType === "NNN" && deal.procurementBasis === "Gross" && deal.includeOpexInNNNGross) 
+                            ? month1.baseRent + month1.opexRecovery 
+                            : month1.baseRent;
+                        data.push(['Procurement Multiplier:', deal.procurementMultiplier]);
+                        data.push(['Procurement Fee:', result.procurementFee]);
+                        data.push([]);
+                        
+                        // Total Consideration
+                        data.push(['PERCENTAGE COMMISSION CALCULATION']);
+                        const sumBaseRent = result.months.reduce((sum, m) => sum + m.baseRent, 0);
+                        const sumAbatement = result.months.reduce((sum, m) => sum + m.abatement, 0);
+                        data.push(['Sum of Base Rent (All Months):', sumBaseRent]);
+                        data.push(['Sum of Abatement:', sumAbatement]);
+                        data.push(['Base Rent Less Abatement:', sumBaseRent - sumAbatement]);
+                        
+                        if (deal.rateType === "NNN" && deal.commissionBasis === "Gross") {
+                            const monthlyOpex = roundToCent((deal.opex * deal.suiteSize) / 12);
+                            const totalOpex = monthlyOpex * deal.term;
+                            data.push(['Monthly OPEX:', monthlyOpex]);
+                            data.push(['OPEX × Term:', totalOpex]);
+                            data.push(['Total Consideration (Gross):', sumBaseRent - sumAbatement + totalOpex]);
+                        } else {
+                            data.push(['Total Consideration:', sumBaseRent - sumAbatement]);
+                        }
+                        
+                        data.push([]);
+                        const totalConsideration = deal.rateType === "NNN" && deal.commissionBasis === "Gross"
+                            ? sumBaseRent - sumAbatement + (roundToCent((deal.opex * deal.suiteSize) / 12) * deal.term)
+                            : sumBaseRent - sumAbatement;
+                        
+                        data.push(['Commissionable Amount (Total - Procurement):', totalConsideration - result.procurementFee]);
+                        data.push(['Commission Rate:', deal.commissionRate + '%']);
+                        data.push(['Percentage Commission:', result.percentageCommission]);
+                        data.push([]);
+                        data.push([]);
+                        
+                        data.push(['TOTAL COMMISSIONS']);
+                        data.push(['Procurement Fee:', result.procurementFee]);
+                        data.push(['Percentage Commission:', result.percentageCommission]);
+                        data.push(['TOTAL:', result.totalCommissions]);
+                        data.push([]);
+                        data.push([]);
+                        
+                        // RENT SCHEDULE
+                        data.push(['RENT SCHEDULE FOR COMMISSION CALCULATION']);
+                        data.push([]);
+                        
+                        // Determine if we should show Gross Rent column
+                        const showGrossRent = deal.rateType === "NNN" && deal.commissionBasis === "Gross";
+                        
+                        if (showGrossRent) {
+                            data.push(['Month', 'Base Rate ($/SF/yr)', 'Base Rent', 'OPEX', 'Gross Rent', 'Abatement', 'Period Net']);
+                        } else {
+                            data.push(['Month', 'Base Rate ($/SF/yr)', 'Base Rent', 'Abatement', 'Period Net']);
+                        }
+                        
+                        let totalBaseRent = 0;
+                        let totalOpex = 0;
+                        let totalGrossRent = 0;
+                        let totalAbatement = 0;
+                        let totalPeriodNet = 0;
+                        
+                        result.months.forEach(m => {
+                            const periodNet = m.baseRent - m.abatement;
+                            totalBaseRent += m.baseRent;
+                            totalOpex += m.opexRecovery;
+                            totalGrossRent += (m.baseRent + m.opexRecovery);
+                            totalAbatement += m.abatement;
+                            totalPeriodNet += periodNet;
+                            
+                            if (showGrossRent) {
+                                data.push([
+                                    m.month,
+                                    m.baseRate,
+                                    m.baseRent,
+                                    m.opexRecovery,
+                                    m.baseRent + m.opexRecovery,
+                                    m.abatement,
+                                    periodNet
+                                ]);
+                            } else {
+                                data.push([
+                                    m.month,
+                                    m.baseRate,
+                                    m.baseRent,
+                                    m.abatement,
+                                    periodNet
+                                ]);
+                            }
+                        });
+                        
+                        // Totals row
+                        data.push([]);
+                        if (showGrossRent) {
+                            data.push(['TOTALS', '', totalBaseRent, totalOpex, totalGrossRent, totalAbatement, totalPeriodNet]);
+                        } else {
+                            data.push(['TOTALS', '', totalBaseRent, totalAbatement, totalPeriodNet]);
+                        }
+                        
+                        const ws = XLSX.utils.aoa_to_sheet(data);
+                        ws['!cols'] = [
+                            { wch: 40 },
+                            { wch: 20 }
+                        ];
+                        
+                        XLSX.utils.book_append_sheet(workbook, ws, sanitizeSheetName(deal.name));
+                    });
+                    
+                    const timestamp = new Date().toISOString().slice(0, 10);
+                    XLSX.writeFile(workbook, `Commission_Calculations_${timestamp}.xlsx`);
+                } catch (error) {
+                    console.error('Error exporting:', error);
+                    alert('Error exporting: ' + error.message);
+                }
+            };
+
+            const exportAnalysisToExcel = () => {
+                try {
+                    if (typeof XLSX === 'undefined') {
+                        alert('Excel library not loaded. Please refresh the page.');
+                        return;
+                    }
+                    
+                    const workbook = XLSX.utils.book_new();
+                    const calculatedDeals = deals.filter(d => results[d.id]);
+                    
+                    if (calculatedDeals.length === 0) {
+                        alert('Please calculate at least one deal before exporting.');
+                        return;
+                    }
+                    
+                    calculatedDeals.forEach(deal => {
+                        const result = results[deal.id];
+                        const data = [];
+                        
+                        data.push([`${deal.name} - Landlord NER Analysis`]);
+                        data.push([]);
+                        data.push(['DEAL PARAMETERS']);
+                        data.push(['Suite Size (RSF):', deal.suiteSize]);
+                        data.push(['Term (months):', deal.term]);
+                        data.push(['Commencement Date:', deal.commencementDate]);
+                        data.push(['Rate Type:', deal.rateType]);
+                        data.push(['Base Rate ($/SF/yr):', deal.baseRate]);
+                        data.push(['Annual Escalation (%):', deal.annualEscalation]);
+                        data.push(['OPEX ($/SF/yr):', deal.rateType === "NNN" ? deal.opex : deal.baseYearOpex]);
+                        data.push(['OPEX Escalation (%):', deal.opexEscalation]);
+                        data.push(['Free Rent Months:', deal.freeRentMonths]);
+                        data.push(['TI Allowance ($/SF):', deal.tiAllowance]);
+                        data.push(['Procurement Multiplier:', deal.procurementMultiplier]);
+                        data.push(['Commission Rate (%):', deal.commissionRate]);
+                        data.push(['Discount Rate (%):', discountRate]);
+                        data.push([]);
+                        
+                        data.push(['FINANCIAL SUMMARY']);
+                        data.push(['Upfront Costs:', result.upfrontCosts]);
+                        data.push(['  - TI Cost:', result.tiCost]);
+                        data.push(['  - Total Commissions:', result.totalCommissions]);
+                        if (result.procurementFee > 0) {
+                            data.push(['    • Procurement Fee:', result.procurementFee]);
+                        }
+                        data.push(['    • Percentage Commission:', result.percentageCommission]);
+                        data.push(['Total Net Rent (Undiscounted):', result.totalNetRent]);
+                        data.push(['Average Monthly Net:', result.avgMonthlyNet]);
+                        data.push(['Simple NER ($/SF/yr):', result.simpleNER]);
+                        data.push([]);
+                        data.push(['NPV ANALYSIS']);
+                        data.push(['Present Value of Net Rents:', result.pvOfNetRents]);
+                        data.push(['Net Present Value:', result.npv]);
+                        data.push(['NPV-Based NER ($/SF/yr):', result.npvNER]);
+                        data.push(['Breakeven Month:', result.breakevenMonth || 'Does not break even']);
+                        data.push([]);
+                        
+                        data.push(['MONTH-BY-MONTH SCHEDULE']);
+                        data.push(['Month', 'Start Date', 'Base Rate', 'OPEX Rate', 'Base Rent', 'OPEX Recovery', 'OPEX Expense', 'Gross Revenue', 'Abatement', 'Net Revenue', 'Landlord Net Rent']);
+                        
+                        result.months.forEach(m => {
+                            data.push([
+                                m.month,
+                                m.startDate,
+                                m.baseRate,
+                                m.opexRate,
+                                m.baseRent,
+                                m.opexRecovery,
+                                m.opexExpense,
+                                m.grossRevenue,
+                                m.abatement,
+                                m.netRevenue,
+                                m.landlordNetRent
+                            ]);
+                        });
+                        
+                        const ws = XLSX.utils.aoa_to_sheet(data);
+                        XLSX.utils.book_append_sheet(workbook, ws, sanitizeSheetName(deal.name));
+                    });
+                    
+                    const timestamp = new Date().toISOString().slice(0, 10);
+                    XLSX.writeFile(workbook, `Landlord_NER_Analysis_${timestamp}.xlsx`);
+                } catch (error) {
+                    console.error('Error exporting:', error);
+                    alert('Error exporting: ' + error.message);
+                }
+            };
+
+            // Render deal inputs and results
+            const renderDealCard = (deal, index) => {
+                const result = results[deal.id];
+                const colors = [
+                    { bg: 'bg-blue-50', border: 'border-blue-300', text: 'text-blue-900' },
+                    { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-900' },
+                    { bg: 'bg-purple-50', border: 'border-purple-300', text: 'text-purple-900' },
+                    { bg: 'bg-orange-50', border: 'border-orange-300', text: 'text-orange-900' }
+                ];
+                const color = colors[index % 4];
+
+                return (
+                    <div key={deal.id} className={`min-w-[400px] ${color.bg} border-2 ${color.border} rounded-lg p-4`}>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className={`text-xl font-bold ${color.text}`}>{deal.name}</h3>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => duplicateDeal(deal.id)}
+                                    className="p-2 rounded bg-white hover:bg-gray-100"
+                                    title="Duplicate"
+                                >
+                                    <Copy size={16} />
+                                </button>
+                                {deals.length > 1 && (
+                                    <button
+                                        onClick={() => removeDeal(deal.id)}
+                                        className="p-2 rounded bg-white hover:bg-gray-100 text-red-600"
+                                        title="Delete"
+                                    >
+                                        <Trash2 size={16} />
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        <h4 className="font-bold text-md mb-3">Basic Information</h4>
+                        {renderInput(deal.id, "Deal Name", deal.name, "name")}
+                        {renderInput(deal.id, "Commencement Date", deal.commencementDate, "commencementDate", "date")}
+                        {renderInput(deal.id, "Suite Size (RSF)", deal.suiteSize, "suiteSize", "number")}
+                        {renderInput(deal.id, "Term (months)", deal.term, "term", "number")}
+                        
+                        <h4 className="font-bold text-md mb-3 mt-4">Rent Structure</h4>
+                        {renderSelect(deal.id, "Rate Type", deal.rateType, "rateType", ["NNN", "FS"])}
+                        {renderInput(deal.id, "Base Rate ($/SF/yr)", deal.baseRate, "baseRate", "number", "", "0.01")}
+                        {renderInput(deal.id, "Annual Escalation (%)", deal.annualEscalation, "annualEscalation", "number", "", "0.1")}
+                        
+                        <h4 className="font-bold text-md mb-3 mt-4">Operating Expenses</h4>
+                        {deal.rateType === "NNN" ? (
+                            <>
+                                {renderInput(deal.id, "OPEX ($/SF/yr)", deal.opex, "opex", "number", "", "0.01")}
+                                {renderInput(deal.id, "OPEX Escalation (%)", deal.opexEscalation, "opexEscalation", "number", "", "0.1")}
+                            </>
+                        ) : (
+                            <>
+                                {renderInput(deal.id, "Base Year", deal.baseYear, "baseYear", "number")}
+                                {renderInput(deal.id, "Base Year OPEX ($/SF/yr)", deal.baseYearOpex, "baseYearOpex", "number", "", "0.01")}
+                                {renderInput(deal.id, "OPEX Escalation (%)", deal.opexEscalation, "opexEscalation", "number", "", "0.1")}
+                            </>
+                        )}
+                        
+                        <h4 className="font-bold text-md mb-3 mt-4">Free Rent</h4>
+                        {renderInput(deal.id, "Free Rent Months", deal.freeRentMonths, "freeRentMonths", "number")}
+                        {renderInput(deal.id, "Abatement %", deal.abatementPercent, "abatementPercent", "number", "", "1")}
+                        
+                        <h4 className="font-bold text-md mb-3 mt-4">Deal Costs</h4>
+                        {renderInput(deal.id, "TI Allowance ($/SF)", deal.tiAllowance, "tiAllowance", "number", "", "0.01")}
+                        
+                        <h5 className="font-semibold text-sm mb-2 mt-3">Leasing Commissions</h5>
+                        {renderInput(deal.id, "Procurement Multiplier", deal.procurementMultiplier, "procurementMultiplier", "number", "", "0.1")}
+                        {deal.procurementMultiplier > 0 && (
+                            <>
+                                {renderSelect(deal.id, "Procurement Basis", deal.procurementBasis, "procurementBasis", ["Gross", "Net"])}
+                                {deal.procurementBasis === "Gross" && deal.rateType === "NNN" && (
+                                    renderCheckbox(deal.id, "Include OPEX in NNN Gross", deal.includeOpexInNNNGross, "includeOpexInNNNGross")
+                                )}
+                            </>
+                        )}
+                        {renderInput(deal.id, "Commission Rate (%)", deal.commissionRate, "commissionRate", "number", "", "0.1")}
+                        {renderSelect(deal.id, "Commission Basis", deal.commissionBasis, "commissionBasis", ["Gross", "Net"])}
+                        {renderInput(deal.id, "Additional Costs ($)", deal.additionalCosts, "additionalCosts", "number", "", "0.01")}
+                        
+                        <button
+                            onClick={() => handleCalculate(deal.id)}
+                            className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded flex items-center justify-center gap-2"
+                        >
+                            <Calculator size={20} />
+                            Calculate
+                        </button>
+
+                        {result && (
+                            <div className="mt-6 space-y-4">
+                                <div className={`border-2 ${color.border} rounded-lg p-4 bg-white`}>
+                                    <h4 className="font-bold text-lg mb-3">Financial Summary</h4>
+                                    <div className="space-y-2 text-sm">
+                                        <div className="flex justify-between">
+                                            <span>Upfront Costs:</span>
+                                            <span className="font-medium text-red-700">{formatCurrency(result.upfrontCosts)}</span>
+                                        </div>
+                                        <div className="flex justify-between pl-4 text-xs">
+                                            <span>TI Cost:</span>
+                                            <span>{formatCurrency(result.tiCost)}</span>
+                                        </div>
+                                        <div className="flex justify-between pl-4 text-xs">
+                                            <span>Total Commissions:</span>
+                                            <span>{formatCurrency(result.totalCommissions)}</span>
+                                        </div>
+                                        {result.procurementFee > 0 && (
+                                            <div className="flex justify-between pl-8 text-xs text-gray-600">
+                                                <span>• Procurement Fee:</span>
+                                                <span>{formatCurrency(result.procurementFee)}</span>
+                                            </div>
+                                        )}
+                                        <div className="flex justify-between pl-8 text-xs text-gray-600">
+                                            <span>• Percentage Commission:</span>
+                                            <span>{formatCurrency(result.percentageCommission)}</span>
+                                        </div>
+                                        <div className="flex justify-between border-t pt-2">
+                                            <span>Total Net Rent:</span>
+                                            <span className="font-medium">{formatCurrency(result.totalNetRent)}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Avg Monthly Net:</span>
+                                            <span className="font-medium">{formatCurrency(result.avgMonthlyNet)}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Simple NER ($/SF/yr):</span>
+                                            <span className="font-medium">${result.simpleNER.toFixed(2)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className={`border-2 border-indigo-400 rounded-lg p-4 bg-indigo-50`}>
+                                    <h4 className="font-bold text-lg mb-3 text-indigo-900">NPV Analysis @ {discountRate}%</h4>
+                                    <div className="space-y-2 text-sm">
+                                        <div className="flex justify-between">
+                                            <span>PV of Net Rents:</span>
+                                            <span className="font-medium">{formatCurrency(result.pvOfNetRents)}</span>
+                                        </div>
+                                        <div className="flex justify-between font-bold text-base border-t pt-2">
+                                            <span>Net Present Value:</span>
+                                            <span className={result.npv >= 0 ? 'text-green-700' : 'text-red-700'}>
+                                                {formatCurrency(result.npv)}
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-between font-bold text-base bg-indigo-100 -mx-4 px-4 py-2">
+                                            <span>NPV-Based NER:</span>
+                                            <span className="text-indigo-900">${result.npvNER.toFixed(2)}/SF/yr</span>
+                                        </div>
+                                        <div className="flex justify-between border-t pt-2">
+                                            <span>Breakeven Month:</span>
+                                            <span className="font-medium">{result.breakevenMonth || 'Does not break even'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className={`border-2 ${color.border} rounded-lg p-4 bg-white mt-4`}>
+                                    <h4 className="font-bold text-lg mb-3">Month-by-Month Cash Flow</h4>
+                                    <div className="overflow-x-auto max-h-96">
+                                        <table className="w-full text-xs border-collapse">
+                                            <thead className="sticky top-0 bg-gray-100">
+                                                <tr>
+                                                    <th className="border px-2 py-2 text-left">Month</th>
+                                                    <th className="border px-2 py-2 text-left">Date</th>
+                                                    <th className="border px-2 py-2 text-right">Base Rate</th>
+                                                    <th className="border px-2 py-2 text-right">Base Rent</th>
+                                                    <th className="border px-2 py-2 text-right">OPEX Recovery</th>
+                                                    <th className="border px-2 py-2 text-right">Gross Revenue</th>
+                                                    <th className="border px-2 py-2 text-right">Abatement</th>
+                                                    <th className="border px-2 py-2 text-right">Net Revenue</th>
+                                                    <th className="border px-2 py-2 text-right">OPEX Expense</th>
+                                                    <th className="border px-2 py-2 text-right">TI Cost</th>
+                                                    <th className="border px-2 py-2 text-right">Proc Fee</th>
+                                                    <th className="border px-2 py-2 text-right">% Comm</th>
+                                                    {deal.additionalCosts > 0 && (
+                                                        <th className="border px-2 py-2 text-right">Add'l Costs</th>
+                                                    )}
+                                                    <th className="border px-2 py-2 text-right font-bold">Net Obligation</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {result.months.map((m, idx) => {
+                                                    // Month 1 includes upfront costs
+                                                    const tiCost = idx === 0 ? result.tiCost : 0;
+                                                    const procFee = idx === 0 ? result.procurementFee : 0;
+                                                    const pctComm = idx === 0 ? result.percentageCommission : 0;
+                                                    const addlCosts = idx === 0 ? deal.additionalCosts : 0;
+                                                    const totalUpfront = tiCost + procFee + pctComm + addlCosts;
+                                                    const netObligation = m.landlordNetRent - totalUpfront;
+                                                    
+                                                    return (
+                                                        <tr 
+                                                            key={m.month}
+                                                            className={m.hasBaseEscalation || m.hasOpexEscalation ? 'bg-yellow-50' : ''}
+                                                        >
+                                                            <td className="border px-2 py-1">
+                                                                {m.month}
+                                                                {m.hasBaseEscalation && <span className="ml-1 text-orange-600 font-bold">↑B</span>}
+                                                                {m.hasOpexEscalation && <span className="ml-1 text-purple-600 font-bold">↑O</span>}
+                                                            </td>
+                                                            <td className="border px-2 py-1">{m.startDate}</td>
+                                                            <td className="border px-2 py-1 text-right">${m.baseRate.toFixed(2)}</td>
+                                                            <td className="border px-2 py-1 text-right">{formatCurrency(m.baseRent)}</td>
+                                                            <td className="border px-2 py-1 text-right">{m.opexRecovery > 0 ? formatCurrency(m.opexRecovery) : '-'}</td>
+                                                            <td className="border px-2 py-1 text-right">{formatCurrency(m.grossRevenue)}</td>
+                                                            <td className="border px-2 py-1 text-right text-red-700">{m.abatement > 0 ? `(${formatCurrency(m.abatement)})` : '-'}</td>
+                                                            <td className="border px-2 py-1 text-right font-medium">{formatCurrency(m.netRevenue)}</td>
+                                                            <td className="border px-2 py-1 text-right text-red-700">({formatCurrency(m.opexExpense)})</td>
+                                                            <td className="border px-2 py-1 text-right text-red-700">
+                                                                {tiCost > 0 ? `(${formatCurrency(tiCost)})` : '-'}
+                                                            </td>
+                                                            <td className="border px-2 py-1 text-right text-red-700">
+                                                                {procFee > 0 ? `(${formatCurrency(procFee)})` : '-'}
+                                                            </td>
+                                                            <td className="border px-2 py-1 text-right text-red-700">
+                                                                {pctComm > 0 ? `(${formatCurrency(pctComm)})` : '-'}
+                                                            </td>
+                                                            {deal.additionalCosts > 0 && (
+                                                                <td className="border px-2 py-1 text-right text-red-700">
+                                                                    {addlCosts > 0 ? `(${formatCurrency(addlCosts)})` : '-'}
+                                                                </td>
+                                                            )}
+                                                            <td className={`border px-2 py-1 text-right font-bold ${netObligation >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                                                                {formatCurrency(netObligation)}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div className="mt-2 text-xs text-gray-600">
+                                        <div><span className="text-orange-600 font-bold">↑B</span> = Base rent escalation</div>
+                                        <div><span className="text-purple-600 font-bold">↑O</span> = OPEX escalation</div>
+                                        <div className="mt-1 font-medium">Net Obligation = Net Revenue - OPEX Expense - Upfront Costs (Month 1 only)</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            return (
+                <div className="max-w-full mx-auto p-6">
+                    <h1 className="text-3xl font-bold mb-2 text-center">Landlord Net Effective Rent Analysis</h1>
+                    <p className="text-center text-gray-600 mb-4">NPV-Based Economic Return Calculator</p>
+
+                    <div className="mb-6 flex justify-center items-center gap-4">
+                        <div className="flex items-center gap-2">
+                            <label className="font-medium text-gray-700">Discount Rate:</label>
+                            <input
+                                type="number"
+                                value={discountRate}
+                                onChange={(e) => setDiscountRate(parseFloat(e.target.value) || 8)}
+                                className="w-20 border rounded px-3 py-2"
+                                step="0.1"
+                            />
+                            <span className="text-gray-600">%</span>
+                        </div>
+                        <button
+                            onClick={() => setShowAddModal(true)}
+                            disabled={deals.length >= 4}
+                            className={`flex items-center gap-2 px-6 py-3 rounded-lg font-bold text-white ${
+                                deals.length >= 4 
+                                    ? 'bg-gray-400 cursor-not-allowed' 
+                                    : 'bg-blue-600 hover:bg-blue-700'
+                            }`}
+                        >
+                            <Plus size={20} />
+                            Add New Deal {deals.length >= 4 && '(Max 4)'}
+                        </button>
+                    </div>
+
+                    {showAddModal && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+                                <h3 className="text-xl font-bold mb-4">Add New Deal</h3>
+                                
+                                <div className="mb-4">
+                                    <label className="flex items-center mb-3">
+                                        <input
+                                            type="radio"
+                                            checked={!copyFromDealId}
+                                            onChange={() => setCopyFromDealId(null)}
+                                            className="mr-2"
+                                        />
+                                        <span>Start from default values</span>
+                                    </label>
+                                    
+                                    <label className="flex items-center">
+                                        <input
+                                            type="radio"
+                                            checked={!!copyFromDealId}
+                                            onChange={() => setCopyFromDealId(deals[0]?.id)}
+                                            className="mr-2"
+                                        />
+                                        <span>Copy from existing deal</span>
+                                    </label>
+                                </div>
+
+                                {copyFromDealId !== null && (
+                                    <div className="mb-4">
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                                            Select deal to copy:
+                                        </label>
+                                        <select
+                                            value={copyFromDealId || ''}
+                                            onChange={(e) => setCopyFromDealId(parseInt(e.target.value))}
+                                            className="w-full border rounded px-3 py-2"
+                                        >
+                                            {deals.map(deal => (
+                                                <option key={deal.id} value={deal.id}>
+                                                    {deal.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
+
+                                <div className="flex gap-3 mt-6">
+                                    <button
+                                        onClick={addNewDeal}
+                                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                                    >
+                                        Add Deal
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setShowAddModal(false);
+                                            setCopyFromDealId(null);
+                                        }}
+                                        className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="mb-6 overflow-x-auto">
+                        <div className="flex gap-6 pb-4">
+                            {deals.map((deal, idx) => renderDealCard(deal, idx))}
+                        </div>
+                    </div>
+
+                    {Object.keys(results).length > 0 && (
+                        <>
+                            <div className="mt-8 mb-6">
+                                <h2 className="text-2xl font-bold mb-6 text-center">Deal Analysis Charts</h2>
+                                
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                                    {/* Chart 1: Cumulative Net Cash Flow */}
+                                    <div className="border-2 border-gray-300 rounded-lg p-4 bg-white">
+                                        <h3 className="font-bold text-lg mb-3 text-center">Cumulative Net Cash Flow</h3>
+                                        <canvas id="cumulativeCashFlowChart"></canvas>
+                                        <div className="mt-3 flex justify-center">
+                                            <button
+                                                onClick={() => exportChart('cumulativeCashFlowChart', 'Cumulative_Cash_Flow')}
+                                                className="flex items-center gap-2 px-4 py-2 rounded bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium"
+                                            >
+                                                <Download size={16} />
+                                                Export Chart
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Chart 2: NPV-Based NER Comparison */}
+                                    <div className="border-2 border-gray-300 rounded-lg p-4 bg-white">
+                                        <h3 className="font-bold text-lg mb-3 text-center">NPV-Based NER Comparison</h3>
+                                        <canvas id="npvComparisonChart"></canvas>
+                                        <div className="mt-3 flex justify-center">
+                                            <button
+                                                onClick={() => exportChart('npvComparisonChart', 'NPV_NER_Comparison')}
+                                                className="flex items-center gap-2 px-4 py-2 rounded bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium"
+                                            >
+                                                <Download size={16} />
+                                                Export Chart
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mt-8 mb-6 flex justify-center gap-4">
+                                <button
+                                    onClick={exportCommissionCalc}
+                                    className="flex items-center gap-2 px-6 py-3 rounded-lg font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg"
+                                >
+                                    <Download size={20} />
+                                    Export Commission Calculations
+                                </button>
+                                <button
+                                    onClick={exportAnalysisToExcel}
+                                    className="flex items-center gap-2 px-6 py-3 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 shadow-lg"
+                                >
+                                    <Download size={20} />
+                                    Export Full Analysis
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            );
+        };
+
+        ReactDOM.render(<LandlordNERTool />, document.getElementById('root'));
+    </script>
+</body>
+</html>
